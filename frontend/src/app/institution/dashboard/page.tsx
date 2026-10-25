@@ -128,7 +128,7 @@ export default function InstitutionDashboard() {
           <div className="border-b border-slate-200 px-5 py-4">
             <h2 className="text-lg font-bold">Your Applications</h2>
             <p className="mt-1 text-sm text-slate-500">
-              Application progress based on the server's current data.
+              Application progress based on the server&apos;s current data.
             </p>
           </div>
 
