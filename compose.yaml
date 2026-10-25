@@ -1,0 +1,21 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: approvedesk-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: approvedesk
+      POSTGRES_USER: approvedesk
+      POSTGRES_PASSWORD: local_dev_password_change_me
+    ports:
+      - "5432:5432"
+    volumes:
+      - approvedesk_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U approvedesk -d approvedesk"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  approvedesk_pgdata:
