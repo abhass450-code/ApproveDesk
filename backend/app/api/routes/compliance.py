@@ -1,222 +1,102 @@
-﻿from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user, require_roles
 from app.db.session import get_db
 from app.models.application import Application
-from app.models.compliance_result import ComplianceResult
-from app.models.compliance_rule import ComplianceRule
+from app.models.compliance import ComplianceRule, ComplianceResult
 from app.models.user import User
 from app.schemas.common import UserRole
-from app.schemas.compliance import (
-    ComplianceEvaluateRequest,
-    ComplianceResultResponse,
-    ComplianceRuleCreate,
-    ComplianceRuleResponse,
-)
-from app.services.compliance_service import evaluate_rule
+from app.schemas.compliance import (ComplianceCheckResponse, ComplianceResultOut, ComplianceRuleCreate,
+                                    ComplianceRuleOut, ComplianceRuleUpdate)
+from app.services.audit_service import append_audit
+from app.services.compliance_service import ALLOWED_OPERATORS, run_compliance_check
+
+router = APIRouter(tags=["Compliance"])
 
 
-router = APIRouter(prefix="/compliance", tags=["Compliance"])
+def _visible_application(db: Session, application_id: int, user: User) -> Application:
+    app = db.get(Application, application_id)
+    if app is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+    if user.role == UserRole.ADMIN.value:
+        return app
+    if user.role == UserRole.INSTITUTION.value and app.institution_id == user.institution_id:
+        return app
+    if user.role == UserRole.OFFICER.value and app.assigned_officer_id == user.id:
+        return app
+    raise HTTPException(status_code=404, detail="Application not found")
 
 
-@router.post(
-    "/rules",
-    response_model=ComplianceRuleResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def create_rule(
-    payload: ComplianceRuleCreate,
-    user: User = Depends(require_roles(UserRole.ADMIN)),
-    db: Session = Depends(get_db),
-) -> ComplianceRuleResponse:
-    existing = db.scalar(
-        select(ComplianceRule).where(ComplianceRule.code == payload.code)
-    )
+@router.get("/compliance/rules", response_model=list[ComplianceRuleOut])
+def list_rules(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[ComplianceRuleOut]:
+    rules = db.scalars(select(ComplianceRule).order_by(ComplianceRule.code.asc())).all()
+    return [ComplianceRuleOut.model_validate(rule) for rule in rules]
 
+
+@router.post("/compliance/rules", response_model=ComplianceRuleOut, status_code=status.HTTP_201_CREATED)
+def create_rule(payload: ComplianceRuleCreate, user: User = Depends(require_roles(UserRole.ADMIN)),
+                db: Session = Depends(get_db)) -> ComplianceRuleOut:
+    if payload.operator not in ALLOWED_OPERATORS:
+        raise HTTPException(status_code=422, detail=f"Unsupported operator: {payload.operator}")
+    if payload.operator != "exists" and payload.threshold_value is None:
+        raise HTTPException(status_code=422, detail="threshold_value is required for comparison operators")
+    existing = db.scalar(select(ComplianceRule).where(ComplianceRule.code == payload.code))
     if existing is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="A compliance rule with this code already exists",
-        )
-
-    rule = ComplianceRule(
-        code=payload.code,
-        name=payload.name,
-        description=payload.description,
-        category=payload.category,
-        field_key=payload.field_key,
-        operator=payload.operator,
-        expected_value=payload.expected_value,
-        severity=payload.severity,
-        application_type=payload.application_type,
-        programme=payload.programme,
-        academic_year=payload.academic_year,
-        source_title=payload.source_title,
-        source_url=payload.source_url,
-        source_clause=payload.source_clause,
-        source_verified=payload.source_verified,
-        is_active=True,
-        version=1,
-        created_by_id=user.id,
-    )
-
+        raise HTTPException(status_code=422, detail=f"Rule code already exists: {payload.code}")
+    rule = ComplianceRule(**payload.model_dump())
     db.add(rule)
+    append_audit(db, actor_id=user.id, action="COMPLIANCE_RULE_CREATED", entity_type="compliance_rule",
+                 entity_id=None, details={"code": rule.code, "demo_only": rule.demo_only})
     db.commit()
     db.refresh(rule)
-
-    return ComplianceRuleResponse.model_validate(rule)
-
-
-@router.get(
-    "/rules",
-    response_model=list[ComplianceRuleResponse],
-)
-def list_rules(
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> list[ComplianceRuleResponse]:
-    rules = db.scalars(
-        select(ComplianceRule)
-        .where(ComplianceRule.is_active.is_(True))
-        .order_by(ComplianceRule.id.asc())
-    ).all()
-
-    return [
-        ComplianceRuleResponse.model_validate(rule)
-        for rule in rules
-    ]
+    return ComplianceRuleOut.model_validate(rule)
 
 
-@router.post(
-    "/evaluate",
-    response_model=list[ComplianceResultResponse],
-)
-def evaluate_application(
-    payload: ComplianceEvaluateRequest,
-    user: User = Depends(
-        require_roles(UserRole.OFFICER, UserRole.ADMIN)
-    ),
-    db: Session = Depends(get_db),
-) -> list[ComplianceResultResponse]:
-    application = db.get(Application, payload.application_id)
-
-    if application is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Application not found",
-        )
-
-    if (
-        user.role == UserRole.OFFICER.value
-        and application.assigned_officer_id != user.id
-    ):
-        raise HTTPException(
-            status_code=404,
-            detail="Application not found",
-        )
-
-    rules = db.scalars(
-        select(ComplianceRule)
-        .where(ComplianceRule.is_active.is_(True))
-        .order_by(ComplianceRule.id.asc())
-    ).all()
-
-    if not rules:
-        raise HTTPException(
-            status_code=404,
-            detail="No active compliance rules configured",
-        )
-
-    results = []
-
-    for rule in rules:
-        evaluation = evaluate_rule(rule, payload.values)
-
-        result = ComplianceResult(
-            application_id=application.id,
-            rule_id=rule.id,
-            rule_code=evaluation["rule_code"],
-            rule_name=evaluation["rule_name"],
-            rule_version=evaluation["rule_version"],
-            field_key=evaluation["field_key"],
-            operator=evaluation["operator"],
-            expected_value=evaluation["expected_value"],
-            actual_value=evaluation["actual_value"],
-            status=evaluation["status"],
-            severity=evaluation["severity"],
-            gap_value=evaluation["gap_value"],
-            explanation=evaluation["explanation"],
-            source_title=evaluation["source_title"],
-            source_url=evaluation["source_url"],
-            source_clause=evaluation["source_clause"],
-            source_verified=evaluation["source_verified"],
-            evidence_document_ids=evaluation["evidence_document_ids"],
-            evaluated_by_id=user.id,
-        )
-
-        db.add(result)
-        results.append(result)
-
+@router.patch("/compliance/rules/{rule_id}", response_model=ComplianceRuleOut)
+def update_rule(rule_id: int, payload: ComplianceRuleUpdate, user: User = Depends(require_roles(UserRole.ADMIN)),
+                db: Session = Depends(get_db)) -> ComplianceRuleOut:
+    rule = db.get(ComplianceRule, rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    changes = payload.model_dump(exclude_unset=True)
+    material = {"field_key", "operator", "threshold_value"} & changes.keys()
+    old_material = (rule.field_key, rule.operator, rule.threshold_value)
+    for key, value in changes.items():
+        setattr(rule, key, value)
+    if material and (rule.field_key, rule.operator, rule.threshold_value) != old_material:
+        rule.version += 1  # keep old results traceable to their rule version
+    db.add(rule)
+    append_audit(db, actor_id=user.id, action="COMPLIANCE_RULE_UPDATED", entity_type="compliance_rule",
+                 entity_id=rule.id, details={"code": rule.code, "version": rule.version})
     db.commit()
+    db.refresh(rule)
+    return ComplianceRuleOut.model_validate(rule)
 
+
+@router.post("/applications/{application_id}/compliance/check", response_model=ComplianceCheckResponse)
+def check(application_id: int, user: User = Depends(require_roles(UserRole.OFFICER, UserRole.ADMIN)),
+          db: Session = Depends(get_db)) -> ComplianceCheckResponse:
+    application = _visible_application(db, application_id, user)
+    results = run_compliance_check(db, application, user)
+    db.commit()
+    counts = {"PASS": 0, "FAIL": 0, "WARNING": 0, "NEEDS_REVIEW": 0}
     for result in results:
-        db.refresh(result)
+        counts[result.status] = counts.get(result.status, 0) + 1
+    return ComplianceCheckResponse(
+        application_id=application.id, evaluated_at=datetime.now(timezone.utc),
+        summary={"total": len(results), "passed": counts["PASS"], "failed": counts["FAIL"],
+                 "warnings": counts["WARNING"], "needs_review": counts["NEEDS_REVIEW"]},
+        results=[ComplianceResultOut.model_validate(result) for result in results],
+    )
 
-    return [
-        ComplianceResultResponse.model_validate(result)
-        for result in results
-    ]
 
-
-@router.get(
-    "/applications/{application_id}/results",
-    response_model=list[ComplianceResultResponse],
-)
-def get_application_results(
-    application_id: int,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> list[ComplianceResultResponse]:
-    application = db.get(Application, application_id)
-
-    if application is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Application not found",
-        )
-
-    if user.role == UserRole.INSTITUTION.value:
-        if application.institution_id != user.institution_id:
-            raise HTTPException(
-                status_code=404,
-                detail="Application not found",
-            )
-
-    elif user.role == UserRole.OFFICER.value:
-        if application.assigned_officer_id != user.id:
-            raise HTTPException(
-                status_code=404,
-                detail="Application not found",
-            )
-
-    elif user.role != UserRole.ADMIN.value:
-        raise HTTPException(
-            status_code=403,
-            detail="Insufficient role",
-        )
-
-    results = db.scalars(
-        select(ComplianceResult)
-        .where(ComplianceResult.application_id == application.id)
-        .order_by(
-            ComplianceResult.evaluated_at.desc(),
-            ComplianceResult.id.desc(),
-        )
-    ).all()
-
-    return [
-        ComplianceResultResponse.model_validate(result)
-        for result in results
-    ]
+@router.get("/applications/{application_id}/compliance/results", response_model=list[ComplianceResultOut])
+def results(application_id: int, user: User = Depends(get_current_user),
+            db: Session = Depends(get_db)) -> list[ComplianceResultOut]:
+    application = _visible_application(db, application_id, user)
+    items = db.scalars(select(ComplianceResult).where(ComplianceResult.application_id == application.id)
+                       .order_by(ComplianceResult.evaluated_at.desc(), ComplianceResult.id.desc())).all()
+    return [ComplianceResultOut.model_validate(item) for item in items]
