@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.common import ApplicationStatus
 
@@ -6,6 +7,12 @@ from app.schemas.common import ApplicationStatus
 class ApplicationCreate(BaseModel):
     title: str = Field(min_length=3, max_length=240)
     description: str | None = Field(default=None, max_length=10000)
+    submitted_data: dict[str, Any] | None = Field(default=None, max_length=100)
+    due_at: datetime | None = None
+
+
+class ApplicationDataUpdate(BaseModel):
+    submitted_data: dict[str, Any] = Field(min_length=1)
 
 
 class ApplicationOut(BaseModel):
@@ -18,8 +25,20 @@ class ApplicationOut(BaseModel):
     description: str | None
     current_stage: ApplicationStatus
     correction_return_stage: ApplicationStatus | None
+    submitted_data: dict[str, Any] | None
+    due_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DocumentOut(BaseModel):
+    id: int
+    application_id: int
+    filename: str
+    content_type: str | None
+    verified: bool
+    created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
 

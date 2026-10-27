@@ -13,8 +13,8 @@ from app.models.audit_log import AuditLog
 from app.models.document import Document
 from app.models.query import Query
 from app.models.user import User
-from app.schemas.application import (ApplicationCreate, ApplicationOut, ApplicationHistoryOut,
-                                     AssignmentRequest, AuditLogOut, StageHistoryOut, TransitionRequest)
+from app.schemas.application import (ApplicationCreate, ApplicationDataUpdate, ApplicationOut, ApplicationHistoryOut,
+                                     AssignmentRequest, AuditLogOut, DocumentOut, StageHistoryOut, TransitionRequest)
 from app.schemas.common import ApplicationStatus, UserRole
 from app.schemas.query import QueryCreate, QueryOut
 from app.services.audit_service import append_audit
@@ -35,7 +35,6 @@ def _visible_application(db: Session, application_id: int, user: User) -> Applic
         return app
     if user.role == UserRole.OFFICER.value and app.assigned_officer_id == user.id:
         return app
-    # Return 404 so callers cannot use the API to discover another tenant's IDs.
     raise HTTPException(status_code=404, detail="Application not found")
 
 
@@ -48,6 +47,7 @@ def create_application(payload: ApplicationCreate,
     code = f"APP-{datetime.now(timezone.utc):%Y%m%d}-{token_hex(3).upper()}"
     application = Application(application_code=code, institution_id=user.institution_id,
                               created_by_id=user.id, title=payload.title.strip(), description=payload.description,
+                              submitted_data=payload.submitted_data, due_at=payload.due_at,
                               current_stage=ApplicationStatus.SUBMITTED.value)
     db.add(application)
     db.flush()
@@ -82,6 +82,20 @@ def list_applications(skip: int = QueryParam(default=0, ge=0), limit: int = Quer
 def get_application(application_id: int, user: User = Depends(get_current_user),
                     db: Session = Depends(get_db)) -> ApplicationOut:
     return ApplicationOut.model_validate(_visible_application(db, application_id, user))
+
+
+@router.patch("/{application_id}/data", response_model=ApplicationOut)
+def update_application_data(application_id: int, payload: ApplicationDataUpdate,
+                            user: User = Depends(require_roles(UserRole.INSTITUTION)),
+                            db: Session = Depends(get_db)) -> ApplicationOut:
+    application = _visible_application(db, application_id, user)
+    application.submitted_data = payload.submitted_data
+    db.add(application)
+    append_audit(db, actor_id=user.id, action="APPLICATION_DATA_UPDATED", entity_type="application",
+                 entity_id=application.id, details={"fields": sorted(payload.submitted_data.keys())})
+    db.commit()
+    db.refresh(application)
+    return ApplicationOut.model_validate(application)
 
 
 @router.post("/{application_id}/transition", response_model=ApplicationOut)
@@ -150,6 +164,15 @@ def create_query(application_id: int, payload: QueryCreate, user: User = Depends
     db.commit()
     db.refresh(query)
     return QueryOut.model_validate(query)
+
+
+@router.get("/{application_id}/documents", response_model=list[DocumentOut])
+def list_documents(application_id: int, user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)) -> list[DocumentOut]:
+    application = _visible_application(db, application_id, user)
+    docs = db.scalars(select(Document).where(Document.application_id == application.id)
+                      .order_by(Document.created_at.desc())).all()
+    return [DocumentOut.model_validate(doc) for doc in docs]
 
 
 @router.post("/{application_id}/documents", status_code=status.HTTP_201_CREATED)

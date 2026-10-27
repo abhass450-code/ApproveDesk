@@ -30,7 +30,7 @@ export default function Home() {
           <h1 className="max-w-2xl text-4xl font-bold leading-tight tracking-tight sm:text-5xl">One clear path from application to decision.</h1>
           <p className="mt-6 max-w-xl text-lg leading-8 text-slate-600">A shared workspace for institutions and review teams to track applications, documents, compliance checks, queries and decisions with a traceable history.</p>
           <div className="mt-8 flex flex-wrap gap-3">
-            <a href="http://localhost:8000/docs" className="rounded-xl bg-blue-950 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-900">Explore API docs</a>
+            <a href="/login" className="rounded-xl bg-orange-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-orange-700">Sign in to the demo</a>
             <a href="https://github.com/abhass450-code/ApproveDesk" className="rounded-xl border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-800 transition hover:bg-slate-100">GitHub repository</a>
           </div>
           <p className="mt-4 text-xs text-slate-500">Demo scaffold only. No official AICTE affiliation is implied.</p>

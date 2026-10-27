@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
+from typing import Any
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
@@ -25,5 +26,7 @@ class Application(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     current_stage: Mapped[str] = mapped_column(String(32), default="SUBMITTED", nullable=False)
     correction_return_stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    submitted_data: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)

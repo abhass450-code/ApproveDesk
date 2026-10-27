@@ -1,115 +1,82 @@
-# ApproveDesk
+# ApproveDesk (AICTE NiyamSetu prototype)
 
-**SIH26262 — AICTE Approval Workflow Automation, Compliance Monitoring and Alert Management System**
+One role-based web application for the SIH26262 problem statement: institutions submit
+applications and respond to queries; officers review documents, run compliance checks and
+take authorized workflow actions; admins assign officers, configure sample rules and monitor
+alerts. An AI assistant summarizes grounded record facts — it never approves or rejects.
 
-ApproveDesk is a prototype for coordinating institutional applications, document scrutiny, compliance checks, officer review, queries, inspections, decisions and audit history. The repository is a monorepo so all six team members can work against the same agreed contracts.
+> Prototype with synthetic/demo data only. No official AICTE affiliation is implied.
+> Sample compliance thresholds are demo assumptions, NOT official requirements, until
+> verified against the applicable AICTE Approval Process Handbook / circulars.
 
-> **Prototype disclaimer:** This is a student/demo system using fictional data. Numerical compliance thresholds are sample rules, not official AICTE regulations unless verified against applicable official sources. AI assistance is optional; the core workflow must work without an AI provider.
+## Stack
 
-## Technology
-
-- **Frontend:** Next.js App Router, TypeScript, Tailwind CSS
-- **Backend:** Python, FastAPI, Pydantic
-- **Database:** PostgreSQL, SQLAlchemy 2, Alembic
-- **Authentication:** JWT access tokens; passwords hashed with Argon2 through `pwdlib`
-- **Local services:** Docker Compose
-- **Planned deployment:** Vercel (frontend) + Render (backend), subject to team account/provider availability
+Next.js (App Router, TypeScript, Tailwind) · FastAPI · SQLAlchemy + Alembic · SQLite locally
+(Postgres via `compose.yaml` optional) · JWT + Argon2 auth · optional OpenAI-compatible AI provider.
 
 ## Repository layout
 
-```text
-ApproveDesk/
-├── .github/workflows/ci.yml
-├── backend/
-│   ├── alembic/                 # Database migrations
-│   ├── app/
-│   │   ├── api/routes/          # Auth, applications, queries
-│   │   ├── core/                # Settings and security
-│   │   ├── db/                  # SQLAlchemy base/session
-│   │   ├── models/              # Shared database models
-│   │   ├── schemas/             # Request/response contracts
-│   │   ├── services/            # Workflow/state-machine logic
-│   │   └── main.py
-│   ├── scripts/seed_demo.py     # Fictional local-only demo accounts
-│   ├── tests/
-│   ├── .env.example
-│   ├── alembic.ini
-│   └── requirements.txt
-├── docs/
-│   ├── API_CONTRACT.md
-│   ├── DATABASE_SCHEMA.md
-│   ├── DEMO_FLOW.md
-│   └── TEAM_WORKFLOW.md
-├── frontend/                    # Next.js + TypeScript + Tailwind
-├── compose.yaml                 # Local PostgreSQL
-└── CONTRIBUTING.md
-```
+- `frontend/` — one Next.js app with role-based routes (`/institution`, `/officer`, `/admin`)
+- `backend/` — FastAPI app (`app/api/routes`, `app/models`, `app/services`, `app/scripts/seed_demo.py`)
+- `docs/` — API contract, database schema, demo flow
 
-## Quick start (Windows PowerShell)
+## Local setup (Fedora/Linux)
 
-### 1. Start PostgreSQL
-
-From the repository root:
-
-```powershell
-docker compose up -d db
-docker compose ps
-```
-
-### 2. Configure and run the backend
-
-```powershell
+```bash
+# Backend
 cd backend
-Copy-Item .env.example .env
-py -3.13 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
+python3.13 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env          # SQLite default works out of the box
 alembic upgrade head
 python -m app.scripts.seed_demo
 uvicorn app.main:app --reload --port 8000
-```
 
-If Python 3.13 is not installed, use a Python version agreed by the backend team and keep it consistent across developers. The local `.env` must stay untracked.
-
-- Health check: http://localhost:8000/api/health
-- Interactive API docs: http://localhost:8000/docs
-
-### 3. Run the frontend
-
-Open a second terminal at the repository root:
-
-```powershell
+# Frontend (second terminal)
 cd frontend
-Copy-Item .env.example .env.local
-npm install
-npm run dev
-```
+cp .env.example .env.local    # NEXT_PUBLIC_API_BASE_URL=http://localhost:8000/api
+npm install && npm run dev
+Open http://localhost:3000 and sign in. API docs: http://localhost:8000/docs
 
-Open http://localhost:3000. `NEXT_PUBLIC_API_BASE_URL` should point to `http://localhost:8000/api` for local development.
+### Synthetic demo accounts (local only — never deploy these)
 
-### 4. Run backend tests
+| Role        | Email                        | Password                  |
+|-------------|------------------------------|---------------------------|
+| INSTITUTION | institution.demo@example.com | Demo-Only-ChangeMe-2026!  |
+| OFFICER     | officer.demo@example.com     | Demo-Only-ChangeMe-2026!  |
+| ADMIN       | admin.demo@example.com       | Demo-Only-ChangeMe-2026!  |
 
-From the repository root:
+## Golden demo (repeatable)
 
-```powershell
-cd backend
-.\.venv\Scripts\Activate.ps1
-pytest -q
-```
+`python -m app.scripts.seed_demo` resets the scenario: DEMO-APP-0001 (faculty_count 18 fails
+the sample rule >= 20, due-soon deadline, open officer query) and DEMO-APP-0002 (overdue).
+Flow: institution submits -> admin assigns officer -> officer advances stages -> compliance
+FAIL -> alert (deduplicated on repeat scans) -> officer query -> institution responds and
+corrects data -> re-check PASS -> authorized stage advance -> full audit trail. The AI
+assistant answers from recorded facts with source labels, with or without an AI provider key.
 
-Tests use an isolated in-memory SQLite database and do not need the local Postgres service.
+## AI assistance disclosure
 
-## Fictional demo accounts
+`AI_API_KEY`/`AI_BASE_URL`/`AI_MODEL` are optional backend-only settings. Without a key the
+assistant returns deterministic, grounded answers from the database. AI output is never used
+to approve/reject an application or override a deterministic compliance result.
 
-The seed script creates synthetic accounts for one institution, one officer and one admin. It uses a clearly documented **local demo password only**; change it before any shared deployment. Never use real personal data, production credentials or secrets in this repository.
+## Tests and checks
 
-## Workflow at a glance
+```bash
+cd backend && pytest -q
+cd frontend && npm run lint && npm run build
+Deployment
 
-`SUBMITTED → INITIAL_SCRUTINY → DOCUMENT_VERIFICATION → COMPLIANCE_CHECK → OFFICER_REVIEW → INSPECTION → FINAL_REVIEW → APPROVED / REJECTED`
+    Backend (Render): Web Service, root directory backend; build pip install -r requirements.txt;
+    start alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT.
+    Env: DATABASE_URL (hosted Postgres), long random JWT_SECRET, CORS_ORIGINS (exact frontend origin),
+    optional AI_API_KEY.
+    Frontend (Vercel): import the repo, root directory frontend;
+    env NEXT_PUBLIC_API_BASE_URL=https://<your-backend>/api. Add the Vercel origin to backend CORS_ORIGINS.
+    Note: local uploads/ storage is for development; production needs durable object storage.
 
-A defined `CORRECTION_REQUIRED` route allows a case to return to the stage where correction was requested. Transitions create stage-history and audit records in the same database transaction. Only an authorized OFFICER or ADMIN can change stages or make a final decision.
-
-## Team ownership
-
-See [docs/TEAM_WORKFLOW.md](docs/TEAM_WORKFLOW.md). Work in feature branches, open pull requests into `dev`, and keep `main` for tested releases. Coordinate model and migration changes before editing shared schema.
+Known limitations (hackathon prototype)
+Sample rule values are demo-only; no official checklist mapping is loaded; OCR/document
+authenticity checks are out of scope; alerts use an on-demand scan (scheduler optional);
+IDs are integers (documented convention) not UUIDs.
