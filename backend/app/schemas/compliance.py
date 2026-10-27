@@ -1,81 +1,67 @@
-from datetime import datetime
-from typing import Any, Literal
-from pydantic import BaseModel, ConfigDict, Field
+﻿from typing import Any
 
-Operator = Literal[">=", "<=", "==", "!=", "exists"]
-Severity = Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+from pydantic import BaseModel, Field
 
 
 class ComplianceRuleCreate(BaseModel):
-    code: str = Field(min_length=3, max_length=60)
-    name: str = Field(min_length=3, max_length=200)
-    category: str = Field(default="GENERAL", max_length=60)
-    field_key: str = Field(min_length=1, max_length=120)
-    operator: Operator
-    threshold_value: Any | None = None
-    unit: str | None = Field(default=None, max_length=40)
-    severity: Severity = "MEDIUM"
-    demo_only: bool = True
-    source_title: str | None = Field(default=None, max_length=240)
-    source_url: str | None = Field(default=None, max_length=500)
-    source_clause: str | None = Field(default=None, max_length=240)
-    description: str | None = Field(default=None, max_length=5000)
+    code: str = Field(min_length=2, max_length=60)
+    name: str = Field(min_length=2, max_length=180)
+    description: str | None = None
 
-
-class ComplianceRuleUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=3, max_length=200)
-    field_key: str | None = Field(default=None, min_length=1, max_length=120)
-    operator: Operator | None = None
-    threshold_value: Any | None = None
-    unit: str | None = Field(default=None, max_length=40)
-    severity: Severity | None = None
-    active: bool | None = None
-    demo_only: bool | None = None
-    description: str | None = Field(default=None, max_length=5000)
-
-
-class ComplianceRuleOut(BaseModel):
-    id: int
-    code: str
-    name: str
     category: str
     field_key: str
     operator: str
-    threshold_value: Any | None
-    unit: str | None
-    severity: str
-    active: bool
+    expected_value: Any = None
+
+    severity: str = "MEDIUM"
+
+    application_type: str | None = None
+    programme: str | None = None
+    academic_year: str | None = None
+
+    source_title: str | None = None
+    source_url: str | None = None
+    source_clause: str | None = None
+    source_verified: bool = False
+
+
+class ComplianceRuleResponse(ComplianceRuleCreate):
+    id: int
     version: int
-    demo_only: bool
-    source_title: str | None
-    source_url: str | None
-    source_clause: str | None
-    description: str | None
-    created_at: datetime
-    updated_at: datetime
-    model_config = ConfigDict(from_attributes=True)
+    is_active: bool
+
+    model_config = {"from_attributes": True}
 
 
-class ComplianceResultOut(BaseModel):
+class ComplianceEvaluateRequest(BaseModel):
+    application_id: int
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
+class ComplianceResultResponse(BaseModel):
     id: int
     application_id: int
-    rule_id: int | None
+    rule_id: int
+
     rule_code: str
+    rule_name: str
     rule_version: int
+
     field_key: str
-    expected: Any | None
-    actual: Any | None
-    unit: str | None
+    operator: str
+    expected_value: Any = None
+    actual_value: Any = None
+
     status: str
-    gap: float | None
-    explanation: str | None
-    evidence_document_ids: list[int] | None
-    evaluated_at: datetime
-    model_config = ConfigDict(from_attributes=True)
+    severity: str
+    gap_value: float | None = None
+    explanation: str
 
+    source_title: str | None = None
+    source_url: str | None = None
+    source_clause: str | None = None
+    source_verified: bool
 
-class ComplianceCheckResponse(BaseModel):
-    application_id: int
-    evaluated_at: datetime
-    summary: dict[str, int]
-    results: list[ComplianceResultOut]
+    evidence_document_ids: list[int]
+
+    model_config = {"from_attributes": True}

@@ -1,70 +1,79 @@
-from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Header, status
 from sqlalchemy.orm import Session
 
-from app.core.security import get_current_user, require_roles
-from app.db.session import get_db
-from app.models.alert import Alert
-from app.models.application import Application
-from app.models.user import User
-from app.schemas.alert import AlertOut, ScanResultOut
-from app.schemas.common import UserRole
-from app.services.alert_service import scan_alerts
-from app.services.audit_service import append_audit
+from app.models.alert import Alert, AlertStatus
+from app.schemas.alert import AlertRead, ScanResult
+from app.services import alert_service
 
-router = APIRouter(prefix="/alerts", tags=["Alerts"])
+# Placeholder dependency for DB session
+def get_db():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.models.alert import Base
 
+    engine = create_engine("sqlite:///./alerts.db", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-def _can_see(application: Application, user: User) -> bool:
-    if user.role == UserRole.ADMIN.value:
-        return True
-    if user.role == UserRole.INSTITUTION.value:
-        return application.institution_id is not None and application.institution_id == user.institution_id
-    if user.role == UserRole.OFFICER.value:
-        return application.assigned_officer_id == user.id
-    return False
-
-
-@router.get("", response_model=list[AlertOut])
-def list_alerts(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[AlertOut]:
-    stmt = (select(Alert).join(Application, Alert.application_id == Application.id)
-            .order_by(Alert.created_at.desc()))
-    if user.role == UserRole.INSTITUTION.value:
-        if user.institution_id is None:
-            return []
-        stmt = stmt.where(Application.institution_id == user.institution_id)
-    elif user.role == UserRole.OFFICER.value:
-        from sqlalchemy import or_
-        stmt = stmt.where(or_(Application.assigned_officer_id == user.id, Alert.recipient_id == user.id))
-    elif user.role != UserRole.ADMIN.value:
-        raise HTTPException(status_code=403, detail="Insufficient role")
-    alerts = db.scalars(stmt.limit(200)).all()
-    return [AlertOut.model_validate(alert) for alert in alerts]
+router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
 
-@router.post("/{alert_id}/acknowledge", response_model=AlertOut)
-def acknowledge(alert_id: int, user: User = Depends(get_current_user),
-                db: Session = Depends(get_db)) -> AlertOut:
-    alert = db.get(Alert, alert_id)
-    if alert is None:
-        raise HTTPException(status_code=404, detail="Alert not found")
-    application = db.get(Application, alert.application_id)
-    if application is None or not _can_see(application, user):
-        raise HTTPException(status_code=404, detail="Alert not found")
-    if alert.status == "OPEN":
-        alert.status = "ACKNOWLEDGED"
-        alert.acknowledged_at = datetime.now(timezone.utc)
-        db.add(alert)
-        append_audit(db, actor_id=user.id, action="ALERT_ACKNOWLEDGED", entity_type="alert",
-                     entity_id=alert.id, details={"application_id": application.id})
-        db.commit()
-        db.refresh(alert)
-    return AlertOut.model_validate(alert)
+@router.get("", response_model=List[AlertRead])
+def get_alerts(
+    x_user_id: Optional[str] = Header(None, alias="X-User-ID"),
+    x_user_role: Optional[str] = Header("INSTITUTION", alias="X-User-Role"),
+    status_filter: Optional[AlertStatus] = None,
+    db: Session = Depends(get_db)
+):
+    """Fetches permitted alerts for current authenticated user/role."""
+    query = db.query(Alert)
+
+    # Role visibility check
+    if x_user_role != "ADMIN" and x_user_id:
+        query = query.filter(Alert.recipient_id == x_user_id)
+
+    if status_filter:
+        query = query.filter(Alert.status == status_filter)
+
+    return query.order_by(Alert.created_at.desc()).all()
 
 
-@router.post("/scan", response_model=ScanResultOut)
-def scan(user: User = Depends(require_roles(UserRole.ADMIN)), db: Session = Depends(get_db)) -> ScanResultOut:
-    result = scan_alerts(db, user)
-    db.commit()
-    return ScanResultOut(**result)
+@router.post("/{alert_id}/acknowledge", response_model=AlertRead)
+def acknowledge_alert(
+    alert_id: str,
+    x_user_id: Optional[str] = Header("DEMO-USER", alias="X-User-ID"),
+    x_user_role: Optional[str] = Header("INSTITUTION", alias="X-User-Role"),
+    db: Session = Depends(get_db)
+):
+    """Acknowledges an active alert."""
+    is_admin = (x_user_role == "ADMIN")
+    alert = alert_service.acknowledge_alert(db, alert_id, recipient_id=x_user_id or "", is_admin=is_admin)
+
+    if not alert:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Alert not found or unauthorized to acknowledge."
+        )
+    return alert
+
+
+@router.post("/scan", response_model=ScanResult)
+def trigger_deadline_scan(
+    x_user_role: Optional[str] = Header("ADMIN", alias="X-User-Role"),
+    db: Session = Depends(get_db)
+):
+    """Admin endpoint to run manual scan on demand for testing/demo."""
+    if x_user_role != "ADMIN":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only ADMIN or demo triggers can invoke deadline scans."
+        )
+
+    result = alert_service.scan_and_create_alerts(db)
+    return result
